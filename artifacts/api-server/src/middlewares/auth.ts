@@ -11,7 +11,9 @@ declare global {
 }
 
 export async function requireAuth(req: Request, res: Response, next: NextFunction) {
-  const token = req.cookies?.session_token ?? req.headers.authorization?.replace("Bearer ", "");
+  const authHeader = req.headers.authorization;
+  const bearerToken = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : undefined;
+  const token = req.cookies?.session_token ?? bearerToken;
   if (!token) {
     res.status(401).json({ error: "unauthenticated", message: "Not logged in" });
     return;
