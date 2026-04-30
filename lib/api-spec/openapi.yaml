@@ -3,13 +3,21 @@ info:
   # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: 飯能まつり デジタルスタンプラリー API
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
     description: Health operations
+  - name: auth
+    description: LINE LIFF authentication
+  - name: stamps
+    description: Stamp rally operations
+  - name: prizes
+    description: Prize redemption operations
+  - name: admin
+    description: Admin operations
 paths:
   /healthz:
     get:
@@ -24,6 +32,244 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /auth/line:
+    post:
+      operationId: lineLogin
+      tags: [auth]
+      summary: LINE LIFF login
+      description: Authenticate user with LINE LIFF ID token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LineLoginBody"
+      responses:
+        "200":
+          description: Authenticated successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "401":
+          description: Invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /auth/me:
+    get:
+      operationId: getMe
+      tags: [auth]
+      summary: Get current user
+      description: Returns the current authenticated user's info
+      responses:
+        "200":
+          description: Current user info
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserInfo"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /stamps/card:
+    get:
+      operationId: getStampCard
+      tags: [stamps]
+      summary: Get stamp card
+      description: Returns the current user's stamp card with all 11 stamps
+      responses:
+        "200":
+          description: Stamp card data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StampCard"
+        "401":
+          description: Not authenticated
+
+  /stamps/apply:
+    post:
+      operationId: applyStamp
+      tags: [stamps]
+      summary: Apply stamp
+      description: Apply a stamp by QR code token or beacon trigger
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApplyStampBody"
+      responses:
+        "200":
+          description: Stamp applied successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApplyStampResponse"
+        "400":
+          description: Already stamped or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated
+        "404":
+          description: Stamp spot not found
+
+  /prizes/status:
+    get:
+      operationId: getPrizeStatus
+      tags: [prizes]
+      summary: Get prize eligibility status
+      description: Returns which prizes the user is eligible for and their redemption status
+      responses:
+        "200":
+          description: Prize eligibility
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PrizeStatus"
+        "401":
+          description: Not authenticated
+
+  /prizes/redeem:
+    post:
+      operationId: redeemPrize
+      tags: [prizes]
+      summary: Redeem prize (staff use)
+      description: Mark a prize as redeemed by staff
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RedeemPrizeBody"
+      responses:
+        "200":
+          description: Prize redeemed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RedeemPrizeResponse"
+        "400":
+          description: Not eligible or already redeemed
+
+  /admin/spots:
+    get:
+      operationId: listSpots
+      tags: [admin]
+      summary: List all stamp spots
+      description: Returns all 11 stamp spots with their QR tokens
+      responses:
+        "200":
+          description: All stamp spots
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SpotListResponse"
+
+  /admin/spots/{spotId}/token:
+    post:
+      operationId: rotateSpotToken
+      tags: [admin]
+      summary: Rotate QR token for a spot
+      description: Generate a new QR token for a stamp spot (invalidates old one)
+      parameters:
+        - name: spotId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: New token generated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SpotTokenResponse"
+
+  /admin/users:
+    get:
+      operationId: listUsers
+      tags: [admin]
+      summary: List all users with stamp status
+      description: Returns all users and their stamp collection status
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+      responses:
+        "200":
+          description: User list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserListResponse"
+
+  /admin/users/{userId}:
+    get:
+      operationId: getUserDetail
+      tags: [admin]
+      summary: Get user stamp detail
+      description: Returns detailed stamp info for a specific user
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: User detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserDetailResponse"
+
+  /admin/export/csv:
+    get:
+      operationId: exportCsv
+      tags: [admin]
+      summary: Export stamp data as CSV
+      description: Export all user stamp data as CSV for analysis
+      responses:
+        "200":
+          description: CSV file
+          content:
+            text/csv:
+              schema:
+                type: string
+
+  /admin/stats:
+    get:
+      operationId: getStats
+      tags: [admin]
+      summary: Get event statistics
+      description: Returns aggregate statistics for the stamp rally event
+      responses:
+        "200":
+          description: Event statistics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatsResponse"
+
 components:
   schemas:
     HealthStatus:
@@ -34,3 +280,393 @@ components:
       required:
         - status
 
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+      required:
+        - error
+        - message
+
+    LineLoginBody:
+      type: object
+      properties:
+        idToken:
+          type: string
+          description: LINE LIFF ID token
+        displayName:
+          type: string
+        pictureUrl:
+          type: string
+      required:
+        - idToken
+
+    AuthResponse:
+      type: object
+      properties:
+        userId:
+          type: string
+        lineUserId:
+          type: string
+        displayName:
+          type: string
+        pictureUrl:
+          type: string
+        sessionToken:
+          type: string
+      required:
+        - userId
+        - lineUserId
+        - displayName
+        - sessionToken
+
+    UserInfo:
+      type: object
+      properties:
+        userId:
+          type: string
+        lineUserId:
+          type: string
+        displayName:
+          type: string
+        pictureUrl:
+          type: string
+        isAdmin:
+          type: boolean
+      required:
+        - userId
+        - lineUserId
+        - displayName
+        - isAdmin
+
+    StampSpot:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        description:
+          type: string
+        location:
+          type: string
+        order:
+          type: integer
+        obtained:
+          type: boolean
+        obtainedAt:
+          type: string
+          format: date-time
+          nullable: true
+      required:
+        - id
+        - name
+        - description
+        - location
+        - order
+        - obtained
+
+    StampCard:
+      type: object
+      properties:
+        userId:
+          type: string
+        displayName:
+          type: string
+        pictureUrl:
+          type: string
+        stamps:
+          type: array
+          items:
+            $ref: "#/components/schemas/StampSpot"
+        totalObtained:
+          type: integer
+        totalSpots:
+          type: integer
+        prizeStatus:
+          $ref: "#/components/schemas/PrizeStatus"
+      required:
+        - userId
+        - displayName
+        - stamps
+        - totalObtained
+        - totalSpots
+        - prizeStatus
+
+    ApplyStampBody:
+      type: object
+      properties:
+        token:
+          type: string
+          description: QR code token or beacon identifier
+        triggerType:
+          type: string
+          enum: [QR, BEACON]
+          description: How the stamp was triggered
+      required:
+        - token
+        - triggerType
+
+    ApplyStampResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        stamp:
+          $ref: "#/components/schemas/StampSpot"
+        totalObtained:
+          type: integer
+        message:
+          type: string
+        prizeUnlocked:
+          type: string
+          nullable: true
+          description: Prize tier unlocked by this stamp (if any)
+      required:
+        - success
+        - stamp
+        - totalObtained
+        - message
+
+    PrizeTier:
+      type: object
+      properties:
+        tier:
+          type: string
+          enum: [bronze, silver, complete]
+        requiredStamps:
+          type: integer
+        label:
+          type: string
+        eligible:
+          type: boolean
+        redeemed:
+          type: boolean
+        redeemedAt:
+          type: string
+          format: date-time
+          nullable: true
+      required:
+        - tier
+        - requiredStamps
+        - label
+        - eligible
+        - redeemed
+
+    PrizeStatus:
+      type: object
+      properties:
+        prizes:
+          type: array
+          items:
+            $ref: "#/components/schemas/PrizeTier"
+        totalObtained:
+          type: integer
+      required:
+        - prizes
+        - totalObtained
+
+    RedeemPrizeBody:
+      type: object
+      properties:
+        userId:
+          type: string
+        tier:
+          type: string
+          enum: [bronze, silver, complete]
+      required:
+        - userId
+        - tier
+
+    RedeemPrizeResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        tier:
+          type: string
+        redeemedAt:
+          type: string
+          format: date-time
+      required:
+        - success
+        - tier
+        - redeemedAt
+
+    AdminSpot:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        description:
+          type: string
+        location:
+          type: string
+        order:
+          type: integer
+        token:
+          type: string
+        tokenExpiresAt:
+          type: string
+          format: date-time
+          nullable: true
+        stampCount:
+          type: integer
+      required:
+        - id
+        - name
+        - description
+        - location
+        - order
+        - token
+        - stampCount
+
+    SpotListResponse:
+      type: object
+      properties:
+        spots:
+          type: array
+          items:
+            $ref: "#/components/schemas/AdminSpot"
+      required:
+        - spots
+
+    SpotTokenResponse:
+      type: object
+      properties:
+        spotId:
+          type: integer
+        token:
+          type: string
+        qrUrl:
+          type: string
+      required:
+        - spotId
+        - token
+        - qrUrl
+
+    AdminUser:
+      type: object
+      properties:
+        userId:
+          type: string
+        lineUserId:
+          type: string
+        displayName:
+          type: string
+        pictureUrl:
+          type: string
+        totalObtained:
+          type: integer
+        bronzeRedeemed:
+          type: boolean
+        silverRedeemed:
+          type: boolean
+        completeRedeemed:
+          type: boolean
+        firstStampAt:
+          type: string
+          format: date-time
+          nullable: true
+        lastStampAt:
+          type: string
+          format: date-time
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+      required:
+        - userId
+        - lineUserId
+        - displayName
+        - totalObtained
+        - bronzeRedeemed
+        - silverRedeemed
+        - completeRedeemed
+        - createdAt
+
+    UserListResponse:
+      type: object
+      properties:
+        users:
+          type: array
+          items:
+            $ref: "#/components/schemas/AdminUser"
+        total:
+          type: integer
+        page:
+          type: integer
+        limit:
+          type: integer
+      required:
+        - users
+        - total
+        - page
+        - limit
+
+    UserDetailResponse:
+      type: object
+      properties:
+        user:
+          $ref: "#/components/schemas/AdminUser"
+        stamps:
+          type: array
+          items:
+            $ref: "#/components/schemas/StampSpot"
+      required:
+        - user
+        - stamps
+
+    StatsResponse:
+      type: object
+      properties:
+        totalUsers:
+          type: integer
+        totalStampsIssued:
+          type: integer
+        bronzeRedemptions:
+          type: integer
+        silverRedemptions:
+          type: integer
+        completeRedemptions:
+          type: integer
+        stampsBySpot:
+          type: array
+          items:
+            type: object
+            properties:
+              spotId:
+                type: integer
+              spotName:
+                type: string
+              count:
+                type: integer
+            required:
+              - spotId
+              - spotName
+              - count
+        usersByStampCount:
+          type: array
+          items:
+            type: object
+            properties:
+              stampCount:
+                type: integer
+              userCount:
+                type: integer
+            required:
+              - stampCount
+              - userCount
+      required:
+        - totalUsers
+        - totalStampsIssued
+        - bronzeRedemptions
+        - silverRedemptions
+        - completeRedemptions
+        - stampsBySpot
+        - usersByStampCount

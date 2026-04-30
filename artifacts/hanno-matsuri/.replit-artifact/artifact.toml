@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "飯能まつり スタンプラリー"
+version = "1.0.0"
+id = "artifacts/hanno-matsuri"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 25874
+
+[services.development]
+run = "pnpm --filter @workspace/hanno-matsuri run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/hanno-matsuri", "run", "build" ]
+publicDir = "artifacts/hanno-matsuri/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "25874"
+BASE_PATH = "/"
