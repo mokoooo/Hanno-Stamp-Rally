@@ -3,31 +3,42 @@ import { useLocation } from "wouter";
 import { BrowserQRCodeReader, IScannerControls } from "@zxing/browser";
 import { useApplyStamp, getGetStampCardQueryKey } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Loader2, X, CheckCircle2, Camera, RefreshCw, QrCode } from "lucide-react";
+import { Loader2, X, CheckCircle2, Camera, RefreshCw, QrCode, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
-import { useLiff } from "@/hooks/use-liff";
 
-type ScanState = "idle" | "requesting" | "scanning" | "liff-scanning" | "processing" | "success" | "error";
+// Access the already-initialized LIFF object (initialized by AuthWrapper)
+function getLiff(): any | null {
+  return (window as any).liff ?? null;
+}
 
-type ScanError =
-  | { kind: "permission-denied" }
-  | { kind: "no-camera" }
-  | { kind: "liff-no-feature" }
-  | { kind: "stamp"; message: string }
-  | { kind: "unknown"; message: string };
-
-function getMediaError(err: unknown): ScanError {
-  if (!(err instanceof Error)) return { kind: "unknown", message: String(err) };
-  if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError")
-    return { kind: "permission-denied" };
-  if (err.name === "NotFoundError" || err.name === "DevicesNotFoundError")
-    return { kind: "no-camera" };
-  return { kind: "unknown", message: err.message };
+// True when running inside LINE's LIFF browser and scanCodeV2 is available
+function canUseLiffScanner(): boolean {
+  const liff = getLiff();
+  if (!liff) return false;
+  try {
+    return liff.isInClient() && typeof liff.scanCodeV2 === "function";
+  } catch {
+    return false;
+  }
 }
 
 function isIOS() {
   return /iP(hone|ad|od)/.test(navigator.userAgent);
+}
+
+function getMediaError(err: unknown): string {
+  if (!(err instanceof Error)) return "カメラへのアクセスに失敗しました";
+  if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") return "permission-denied";
+  if (err.name === "NotFoundError" || err.name === "DevicesNotFoundError") return "no-camera";
+  return err.message;
+}
+
+type ScanState = "idle" | "requesting" | "scanning" | "liff-waiting" | "processing" | "success" | "error";
+
+interface ScanError {
+  type: "permission-denied" | "no-camera" | "liff-error" | "stamp" | "generic";
+  message?: string;
 }
 
 export default function Scan() {
@@ -35,17 +46,14 @@ export default function Scan() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const controlsRef = useRef<IScannerControls | null>(null);
   const scannedRef = useRef(false);
+  const useLiff = canUseLiffScanner();
 
   const [scanState, setScanState] = useState<ScanState>("idle");
   const [scanError, setScanError] = useState<ScanError | null>(null);
 
-  const { liff, isInitialized: liffReady } = useLiff();
   const queryClient = useQueryClient();
   const applyStamp = useApplyStamp();
   const { toast } = useToast();
-
-  /** True when running inside the LINE app and scanCodeV2 is available */
-  const canUseLiffScanner = liffReady && liff && typeof liff.scanCodeV2 === "function";
 
   const stopCameraScanner = useCallback(() => {
     if (controlsRef.current) {
@@ -70,55 +78,61 @@ export default function Scan() {
       }
     } catch (err: any) {
       const message = err?.data?.message ?? err?.message ?? "スタンプの取得に失敗しました";
-      setScanError({ kind: "stamp", message });
+      setScanError({ type: "stamp", message });
       setScanState("error");
     }
   }, [applyStamp, queryClient, stopCameraScanner, setLocation, toast]);
 
-  /** Use LINE's native QR scanner (no camera permission needed) */
+  /** Launch LINE's native QR scanner via liff.scanCodeV2() */
   const startLiffScan = useCallback(async () => {
+    const liff = getLiff();
     if (!liff) return;
     scannedRef.current = false;
     setScanError(null);
-    setScanState("liff-scanning");
+    setScanState("liff-waiting");
+
     try {
       const result = await liff.scanCodeV2();
       if (result?.value) {
         await handleScannedValue(result.value);
       } else {
-        // User cancelled (closed the scanner without scanning)
+        // User dismissed scanner without scanning
         setScanState("idle");
       }
     } catch (err: any) {
-      // Feature not enabled in LINE Developer Console
-      if (err?.code === "FORBIDDEN" || String(err?.message).includes("not available")) {
-        setScanError({ kind: "liff-no-feature" });
-        setScanState("error");
-      } else if (err?.code === "CANCEL") {
-        // User cancelled — just go back idle
+      const code = err?.code ?? "";
+      if (code === "CANCEL" || code === "USER_CANCEL") {
         setScanState("idle");
+      } else if (code === "FORBIDDEN" || String(err?.message).toLowerCase().includes("forbidden")) {
+        setScanError({ type: "liff-error", message: "LINE Developer Consoleで「Scan QR」をONにしてください" });
+        setScanState("error");
       } else {
-        setScanError({ kind: "unknown", message: err?.message ?? "不明なエラーが発生しました" });
+        setScanError({ type: "liff-error", message: err?.message ?? "QRスキャナーを起動できませんでした" });
         setScanState("error");
       }
     }
-  }, [liff, handleScannedValue]);
+  }, [handleScannedValue]);
 
-  /** Use browser camera (regular browser / fallback) */
+  /** Launch browser camera scanner via @zxing/browser */
   const startCameraScan = useCallback(async () => {
     if (!videoRef.current) return;
     scannedRef.current = false;
     setScanError(null);
     setScanState("requesting");
 
-    // Explicitly check permission first
+    // Explicitly request permission first for a clear UX prompt
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "environment" },
-      });
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
       stream.getTracks().forEach(t => t.stop());
     } catch (err) {
-      setScanError(getMediaError(err));
+      const code = getMediaError(err);
+      if (code === "permission-denied") {
+        setScanError({ type: "permission-denied" });
+      } else if (code === "no-camera") {
+        setScanError({ type: "no-camera" });
+      } else {
+        setScanError({ type: "generic", message: code });
+      }
       setScanState("error");
       return;
     }
@@ -137,27 +151,27 @@ export default function Scan() {
       );
       controlsRef.current = controls;
     } catch (err) {
-      setScanError(getMediaError(err));
+      const code = getMediaError(err);
+      setScanError({ type: "generic", message: code });
       setScanState("error");
     }
   }, [handleScannedValue]);
 
-  // Auto-start when component mounts
+  // Auto-start on mount — LIFF scanner or camera scanner
   useEffect(() => {
-    if (!liffReady) return; // wait until we know if we're in LIFF
-    if (canUseLiffScanner) {
+    if (useLiff) {
       startLiffScan();
     } else {
       startCameraScan();
     }
     return () => stopCameraScanner();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [liffReady]);
+  }, []);
 
   const handleRetry = () => {
     scannedRef.current = false;
     setScanError(null);
-    if (canUseLiffScanner) {
+    if (useLiff) {
       startLiffScan();
     } else {
       startCameraScan();
@@ -171,6 +185,7 @@ export default function Scan() {
 
   return (
     <div className="fixed inset-0 z-50 bg-black flex flex-col" data-testid="scan-page">
+
       {/* Header */}
       <div className="absolute top-0 left-0 right-0 z-10 h-16 flex items-center justify-between px-4 bg-gradient-to-b from-black/80 to-transparent">
         <h2 className="font-bold text-white">QRスキャン</h2>
@@ -187,7 +202,7 @@ export default function Scan() {
 
       <div className="flex-1 relative flex items-center justify-center bg-zinc-900">
 
-        {/* Camera video feed */}
+        {/* Camera video element (always rendered, visibility controlled by opacity) */}
         <video
           ref={videoRef}
           className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-300 ${
@@ -198,7 +213,7 @@ export default function Scan() {
           data-testid="video-scanner"
         />
 
-        {/* Viewfinder overlay (camera mode) */}
+        {/* Viewfinder (camera mode) */}
         {scanState === "scanning" && (
           <>
             <div className="absolute inset-0 pointer-events-none">
@@ -227,17 +242,22 @@ export default function Scan() {
           </>
         )}
 
-        {/* LIFF native scanner: waiting state */}
-        {(scanState === "idle" || scanState === "liff-scanning") && canUseLiffScanner && (
+        {/* LIFF scanner waiting state */}
+        {(scanState === "idle" || scanState === "liff-waiting") && useLiff && (
           <div className="flex flex-col items-center gap-6 px-8 text-center">
             <div className="w-24 h-24 bg-primary/20 rounded-full flex items-center justify-center">
               <QrCode className="w-12 h-12 text-primary" />
             </div>
             <div className="space-y-2">
-              <p className="text-white font-bold text-lg">LINEのQRスキャナーが開きます</p>
+              <p className="text-white font-bold text-lg">QRスキャナーが開きます</p>
               <p className="text-white/60 text-sm">スポットのQRコードを読み取ってください</p>
             </div>
-            {scanState === "idle" && (
+            {scanState === "liff-waiting" ? (
+              <div className="flex items-center gap-2 text-white/80">
+                <Loader2 className="w-5 h-5 animate-spin" />
+                <span className="text-sm">スキャナー起動中...</span>
+              </div>
+            ) : (
               <Button
                 className="h-14 px-8 text-lg font-bold rounded-full"
                 onClick={startLiffScan}
@@ -247,17 +267,11 @@ export default function Scan() {
                 QRコードを読み取る
               </Button>
             )}
-            {scanState === "liff-scanning" && (
-              <div className="flex items-center gap-2 text-white/80">
-                <Loader2 className="w-5 h-5 animate-spin" />
-                <span className="text-sm">スキャナーを起動中...</span>
-              </div>
-            )}
           </div>
         )}
 
-        {/* Loading / requesting camera */}
-        {(scanState === "requesting" || (scanState === "idle" && !canUseLiffScanner)) && (
+        {/* Camera requesting permission */}
+        {(scanState === "requesting" || (scanState === "idle" && !useLiff)) && (
           <div className="flex flex-col items-center text-white gap-4">
             <Loader2 className="w-12 h-12 animate-spin text-primary" />
             <p className="text-sm">カメラを起動中...</p>
@@ -282,13 +296,12 @@ export default function Scan() {
           </div>
         )}
 
-        {/* Error states */}
+        {/* Error panel */}
         {scanState === "error" && scanError && (
           <div className="p-6 w-full max-w-sm mx-auto" data-testid="scan-error">
             <div className="bg-white rounded-2xl p-6 text-center shadow-xl space-y-4">
 
-              {/* Permission denied */}
-              {scanError.kind === "permission-denied" && (
+              {scanError.type === "permission-denied" && (
                 <>
                   <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto">
                     <Camera className="w-8 h-8 text-red-500" />
@@ -317,8 +330,7 @@ export default function Scan() {
                 </>
               )}
 
-              {/* No camera found */}
-              {scanError.kind === "no-camera" && (
+              {scanError.type === "no-camera" && (
                 <>
                   <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto">
                     <Camera className="w-8 h-8 text-red-500" />
@@ -330,40 +342,30 @@ export default function Scan() {
                 </>
               )}
 
-              {/* LIFF scanCodeV2 not enabled */}
-              {scanError.kind === "liff-no-feature" && (
+              {scanError.type === "liff-error" && (
                 <>
                   <div className="w-16 h-16 bg-amber-100 rounded-full flex items-center justify-center mx-auto">
                     <QrCode className="w-8 h-8 text-amber-500" />
                   </div>
-                  <h3 className="font-bold text-lg text-gray-900">QRスキャン機能が未設定です</h3>
-                  <div className="bg-gray-50 rounded-xl p-4 text-left text-sm text-gray-700 space-y-1">
-                    <p className="font-semibold">LINE Developer Consoleでの設定：</p>
-                    <ol className="list-decimal list-inside space-y-1">
-                      <li>LIFFアプリの設定を開く</li>
-                      <li>「Scan QR」を<strong>ON</strong>にする</li>
-                      <li>アプリを再起動して再試行</li>
-                    </ol>
-                  </div>
+                  <h3 className="font-bold text-lg text-gray-900">QRスキャナーエラー</h3>
+                  <p className="text-sm text-gray-600">{scanError.message}</p>
                 </>
               )}
 
-              {/* Stamp apply error */}
-              {scanError.kind === "stamp" && (
+              {scanError.type === "stamp" && (
                 <>
                   <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto">
-                    <QrCode className="w-8 h-8 text-red-500" />
+                    <AlertCircle className="w-8 h-8 text-red-500" />
                   </div>
                   <h3 className="font-bold text-lg text-gray-900">スタンプを取得できませんでした</h3>
                   <p className="text-sm text-gray-600">{scanError.message}</p>
                 </>
               )}
 
-              {/* Unknown error */}
-              {scanError.kind === "unknown" && (
+              {scanError.type === "generic" && (
                 <>
                   <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto">
-                    <Camera className="w-8 h-8 text-red-500" />
+                    <AlertCircle className="w-8 h-8 text-red-500" />
                   </div>
                   <h3 className="font-bold text-lg text-gray-900">エラーが発生しました</h3>
                   <p className="text-sm text-gray-600">{scanError.message}</p>
@@ -371,16 +373,14 @@ export default function Scan() {
               )}
 
               <div className="flex flex-col gap-2 pt-2">
-                {scanError.kind !== "liff-no-feature" && (
-                  <Button
-                    className="w-full h-12 font-bold rounded-full"
-                    onClick={handleRetry}
-                    data-testid="button-retry-scan"
-                  >
-                    <RefreshCw className="w-4 h-4 mr-2" />
-                    再試行する
-                  </Button>
-                )}
+                <Button
+                  className="w-full h-12 font-bold rounded-full"
+                  onClick={handleRetry}
+                  data-testid="button-retry-scan"
+                >
+                  <RefreshCw className="w-4 h-4 mr-2" />
+                  再試行する
+                </Button>
                 <Button
                   variant="outline"
                   className="w-full h-12 font-bold rounded-full"
