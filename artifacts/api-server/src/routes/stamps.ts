@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { db, usersTable, spotsTable, stampsTable, prizeRedemptionsTable } from "@workspace/db";
+import { db, spotsTable, stampsTable, prizeRedemptionsTable } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth";
 import { ApplyStampBody } from "@workspace/api-zod";
@@ -34,6 +34,56 @@ async function buildPrizeStatus(userId: string, totalObtained: number) {
   return { prizes, totalObtained };
 }
 
+// ---------------------------------------------------------------------------
+// 共通スタンプ付与関数（QR・Beacon 両方から呼ばれる）
+// ---------------------------------------------------------------------------
+export async function applyStampBySpotId(params: {
+  userId: string;
+  spotId: number;
+  triggerType: "QR" | "BEACON";
+}) {
+  const { userId, spotId, triggerType } = params;
+
+  const spot = await db.query.spotsTable.findFirst({
+    where: eq(spotsTable.id, spotId),
+  });
+
+  if (!spot) {
+    return { status: "spot_not_found" as const, applied: false, spot: null, stamp: null };
+  }
+
+  const existing = await db.query.stampsTable.findFirst({
+    where: and(
+      eq(stampsTable.userId, userId),
+      eq(stampsTable.spotId, spotId),
+    ),
+  });
+
+  if (existing) {
+    return { status: "already_stamped" as const, applied: false, spot, stamp: existing };
+  }
+
+  try {
+    const [created] = await db
+      .insert(stampsTable)
+      .values({ userId, spotId, triggerType })
+      .returning();
+    return { status: "applied" as const, applied: true, spot, stamp: created };
+  } catch (err: any) {
+    // unique制約違反（競合）
+    if (err?.code === "23505") {
+      const existing2 = await db.query.stampsTable.findFirst({
+        where: and(eq(stampsTable.userId, userId), eq(stampsTable.spotId, spotId)),
+      });
+      return { status: "already_stamped" as const, applied: false, spot, stamp: existing2 ?? null };
+    }
+    throw err;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// GET /stamps/card
+// ---------------------------------------------------------------------------
 router.get("/stamps/card", requireAuth, async (req, res) => {
   const userId = req.user!.userId;
 
@@ -74,6 +124,9 @@ router.get("/stamps/card", requireAuth, async (req, res) => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// POST /stamps/apply  (QRコードスキャン)
+// ---------------------------------------------------------------------------
 router.post("/stamps/apply", requireAuth, async (req, res) => {
   const parsed = ApplyStampBody.safeParse(req.body);
   if (!parsed.success) {
@@ -93,23 +146,17 @@ router.post("/stamps/apply", requireAuth, async (req, res) => {
     return;
   }
 
-  const existing = await db.query.stampsTable.findFirst({
-    where: and(
-      eq(stampsTable.userId, userId),
-      eq(stampsTable.spotId, spot.id),
-    ),
-  });
+  const result = await applyStampBySpotId({ userId, spotId: spot.id, triggerType });
 
-  if (existing) {
+  if (result.status === "already_stamped") {
     res.status(400).json({ error: "already_stamped", message: "このスタンプはすでに取得済みです" });
     return;
   }
 
-  await db.insert(stampsTable).values({
-    userId,
-    spotId: spot.id,
-    triggerType,
-  });
+  if (result.status === "spot_not_found") {
+    res.status(404).json({ error: "not_found", message: "スタンプスポットが見つかりません" });
+    return;
+  }
 
   const totalObtained = (await db.query.stampsTable.findMany({
     where: eq(stampsTable.userId, userId),
@@ -119,19 +166,17 @@ router.post("/stamps/apply", requireAuth, async (req, res) => {
   if (totalObtained === 6) prizeUnlocked = "bronze";
   else if (totalObtained === 11) prizeUnlocked = "silver";
 
-  const stampData = {
-    id: spot.id,
-    name: spot.name,
-    description: spot.description,
-    location: spot.location,
-    order: spot.order,
-    obtained: true,
-    obtainedAt: new Date().toISOString(),
-  };
-
   res.json({
     success: true,
-    stamp: stampData,
+    stamp: {
+      id: spot.id,
+      name: spot.name,
+      description: spot.description,
+      location: spot.location,
+      order: spot.order,
+      obtained: true,
+      obtainedAt: new Date().toISOString(),
+    },
     totalObtained,
     message: `${spot.name}のスタンプを獲得しました！`,
     prizeUnlocked,

@@ -11,25 +11,37 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 export default function Home() {
   const queryClient = useQueryClient();
   const { data: stampCard, isLoading, error, refetch, isFetching } = useGetStampCard(undefined, {
-    query: { queryKey: getGetStampCardQueryKey() }
+    query: {
+      queryKey: getGetStampCardQueryKey(),
+      // ビーコンはサーバー側で処理されるため、10秒ごとに自動再取得
+      refetchInterval: 10_000,
+      refetchOnWindowFocus: true,
+      refetchOnReconnect: true,
+    }
   });
 
-  // アプリ復帰時（タブ切り替え・LINEから戻る）にスタンプカードを再取得
-  // ビーコンでスタンプが付与された場合に画面に反映する
-  const lastVisibilityFetch = useRef(0);
+  // アプリ復帰時（LINEから戻る・タブ切り替え）に即時再取得
+  const lastFocusFetch = useRef(0);
   useEffect(() => {
-    const onVisibilityChange = () => {
-      if (document.visibilityState === "visible") {
-        const now = Date.now();
-        // 30秒以内の連続復帰は無視（過剰リクエスト防止）
-        if (now - lastVisibilityFetch.current > 30_000) {
-          lastVisibilityFetch.current = now;
-          queryClient.invalidateQueries({ queryKey: getGetStampCardQueryKey() });
-        }
+    const fetchIfStale = () => {
+      const now = Date.now();
+      if (now - lastFocusFetch.current > 5_000) {
+        lastFocusFetch.current = now;
+        queryClient.invalidateQueries({ queryKey: getGetStampCardQueryKey() });
       }
     };
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") fetchIfStale();
+    };
+
     document.addEventListener("visibilitychange", onVisibilityChange);
-    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("focus", fetchIfStale);
+
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("focus", fetchIfStale);
+    };
   }, [queryClient]);
 
   if (isLoading) {
@@ -107,9 +119,19 @@ export default function Home() {
         {/* ビーコン更新ガイド */}
         <section className="bg-blue-50 border border-blue-200 rounded-xl px-4 py-3 flex items-center gap-3">
           <div className="text-blue-500 text-xl">📡</div>
-          <p className="text-sm text-blue-700 flex-1">
-            お神輿の近くでビーコンを受信した場合は、右上の <RefreshCw className="inline w-3.5 h-3.5" /> で更新するとスタンプが反映されます。
-          </p>
+          <div className="flex-1">
+            <p className="text-sm text-blue-700">
+              お神輿の近くでビーコンを受信すると自動でスタンプが付与されます。
+            </p>
+            <button
+              onClick={() => refetch()}
+              disabled={isFetching}
+              className="mt-1 text-xs text-blue-600 underline flex items-center gap-1 disabled:opacity-50"
+            >
+              <RefreshCw className={`w-3 h-3 ${isFetching ? "animate-spin" : ""}`} />
+              スタンプを今すぐ更新
+            </button>
+          </div>
         </section>
 
         <section>

@@ -1,0 +1,232 @@
+現在、LINE Beaconは発火し、LINEメッセージの送信までは成功しています。
+しかし、アプリ画面上のスタンプカードにスタンプが反映されません。
+
+原因を以下の2系統に分けて改修してください。
+
+1. Webhook側で `stamps` テーブルに正しくinsertできていない可能性
+2. insertは成功しているが、フロント側のスタンプカードが再取得されていない可能性
+
+対象リポジトリ:
+https://github.com/mokoooo/Hanno-Stamp-Rally.git
+
+# 現状確認
+
+現在のスタンプカードは `GET /api/stamps/card` で取得しており、
+`stampsTable` から現在ログイン中ユーザーのスタンプ取得状況を読み込んでいます。
+
+そのため、LINE Beaconでスタンプを付与する場合も、最終的には必ず `stampsTable` に以下の行が入る必要があります。
+
+- userId: usersTable.userId
+- spotId: 1
+- triggerType: "BEACON"
+
+# 改修1: Beacon用のスタンプ付与処理を共通関数化する
+
+`artifacts/api-server/src/routes/stamps.ts` または新規ファイルに、以下のようなサーバー内部用関数を作成してください。
+
+目的:
+QR用APIとBeacon用Webhookで、スタンプ登録ロジックを共通化する。
+
+関数イメージ:
+
+```ts
+export async function applyStampBySpotId(params: {
+  userId: string;
+  spotId: number;
+  triggerType: "QR" | "BEACON";
+}) {
+  const { userId, spotId, triggerType } = params;
+
+  const spot = await db.query.spotsTable.findFirst({
+    where: eq(spotsTable.id, spotId),
+  });
+
+  if (!spot) {
+    return {
+      status: "spot_not_found" as const,
+      applied: false,
+      spot: null,
+    };
+  }
+
+  const existing = await db.query.stampsTable.findFirst({
+    where: and(
+      eq(stampsTable.userId, userId),
+      eq(stampsTable.spotId, spotId),
+    ),
+  });
+
+  if (existing) {
+    return {
+      status: "already_stamped" as const,
+      applied: false,
+      spot,
+      stamp: existing,
+    };
+  }
+
+  const [created] = await db.insert(stampsTable).values({
+    userId,
+    spotId,
+    triggerType,
+  }).returning();
+
+  return {
+    status: "applied" as const,
+    applied: true,
+    spot,
+    stamp: created,
+  };
+}
+
+既存の POST /api/stamps/apply も、この共通関数を使うようにリファクタしてください。
+ただし、既存のQRコード機能を壊さないでください。
+
+改修2: LINE Beacon Webhookで必ずDB登録する
+
+artifacts/api-server/src/routes/line.ts のBeacon処理で、メッセージ送信前または送信直前に、必ず以下を行ってください。
+
+event.source.userId を取得する
+usersTable.lineUserId と照合する
+対象ユーザーが見つかったら applyStampBySpotId({ userId: user.userId, spotId: 1, triggerType: "BEACON" }) を実行する
+結果をログに出す
+その後、LINEメッセージを送信する
+
+対象ビーコン:
+
+const BEACON_STAMP_MAP = {
+  "00000531ee": {
+    spotId: 1,
+    beaconCode: "2e78-7b58-5e1f",
+    name: "お神輿スタンプ 1",
+  },
+};
+
+ログは必ず以下を出してください。
+
+console.log("[Beacon stamp result]", {
+  lineUserId,
+  internalUserId: user?.userId ?? null,
+  hwid,
+  spotId,
+  resultStatus: result?.status ?? "user_not_found",
+  applied: result?.applied ?? false,
+});
+改修3: lineUserIdの不一致対策
+
+現在のLIFFログインでは、場合によって line_uid:${profile.userId} の形式で保存される可能性があります。
+一方、LINE Beacon Webhookの event.source.userId は通常 Uxxxxxxxx のようなLINE userIdです。
+
+そのため、Webhook側のユーザー検索では以下の両方を試してください。
+
+const user = await db.query.usersTable.findFirst({
+  where: or(
+    eq(usersTable.lineUserId, lineUserId),
+    eq(usersTable.lineUserId, `line_uid:${lineUserId}`),
+  ),
+});
+
+必要なimport:
+
+import { eq, or } from "drizzle-orm";
+
+これにより、LIFFログイン時の保存形式が Uxxxx でも line_uid:Uxxxx でも、Beaconイベントから同じユーザーを見つけられるようにしてください。
+
+改修4: スタンプIDではなくspotId=1を明確に使う
+
+今回「スタンプID:1」と表現しているが、現在のDB構造ではスタンプカードの1マス目は spotsTable.id = 1 に対応している可能性が高いです。
+
+したがって、Beaconの処理では stampsTable.id = 1 ではなく、必ず以下をinsertしてください。
+
+{
+  userId: user.userId,
+  spotId: 1,
+  triggerType: "BEACON"
+}
+
+また、spotsTable.id = 1 が存在しない場合は、エラーにしてログに出してください。
+
+改修5: フロント側のスタンプカードを自動更新する
+
+LINE Beaconはサーバー側Webhookで処理されるため、アプリ画面を開いたままではReact Queryのキャッシュが古いままになる可能性があります。
+
+artifacts/hanno-matsuri/src/pages/Home.tsx の useGetStampCard に、以下のいずれか、または両方を追加してください。
+
+A. 一定間隔で再取得
+const { data: stampCard, isLoading, error, refetch } = useGetStampCard(undefined, {
+  query: {
+    queryKey: getGetStampCardQueryKey(),
+    refetchInterval: 10000,
+    refetchOnWindowFocus: true,
+    refetchOnReconnect: true,
+  }
+});
+B. 画面復帰時に再取得
+useEffect(() => {
+  const handleVisibilityChange = () => {
+    if (document.visibilityState === "visible") {
+      refetch();
+    }
+  };
+
+  document.addEventListener("visibilitychange", handleVisibilityChange);
+  window.addEventListener("focus", refetch);
+
+  return () => {
+    document.removeEventListener("visibilitychange", handleVisibilityChange);
+    window.removeEventListener("focus", refetch);
+  };
+}, [refetch]);
+
+必要なimport:
+
+import { useEffect } from "react";
+改修6: 手動更新ボタンを追加する
+
+ビーコン付近でスタンプが押されたか確認できるように、Home画面のスタンプカード見出し付近に更新ボタンを追加してください。
+
+例:
+
+<button
+  onClick={() => refetch()}
+  className="text-sm underline text-primary"
+>
+  スタンプを更新
+</button>
+改修7: 管理画面・DB確認用ログ
+
+Beacon発火後、以下が確認できるようにしてください。
+
+LINEメッセージ送信成功
+usersTableで対象ユーザーが見つかったか
+stampsTableに userId + spotId: 1 が登録されたか
+既に登録済みだったか
+フロントの /api/stamps/card レスポンスで id: 1 の obtained が true になっているか
+
+特に、Webhook処理後に以下のようなログを出してください。
+
+console.log("[Beacon stamp verification]", {
+  userId: user.userId,
+  spotId: 1,
+  stampExists: Boolean(stampAfterInsert),
+});
+テスト手順
+
+実装後、以下の順番で確認してください。
+
+LIFFアプリでログインする
+/api/auth/me で現在のユーザー情報を確認する
+Replitログを開く
+HWID 00000531ee のビーコンに近づく
+LINEメッセージが届くことを確認する
+Replitログで [Beacon stamp result] を確認する
+resultStatus: "applied" または "already_stamped" になっていることを確認する
+Home画面で「スタンプを更新」を押す
+左上のスタンプ、つまり spotId: 1 が取得済みになることを確認する
+画面更新後もスタンプが残ることを確認する
+重要
+メッセージ送信成功だけで処理成功と判断しないこと
+必ず stampsTable へのinsert結果をログに出すこと
+usersTable.lineUserId と event.source.userId の不一致を疑うこと
+spotId: 1 が存在するか確認すること
+フロント側はWebhook発火をリアルタイムには知らないため、再取得処理を必ず入れること

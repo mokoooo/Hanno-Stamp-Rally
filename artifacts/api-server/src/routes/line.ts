@@ -1,14 +1,13 @@
 import { Router } from "express";
 import crypto from "crypto";
-import { db, usersTable, stampsTable } from "@workspace/db";
-import { eq, and } from "drizzle-orm";
+import { db, usersTable } from "@workspace/db";
+import { eq, or } from "drizzle-orm";
 import { logger } from "../lib/logger";
+import { applyStampBySpotId } from "./stamps";
 
 // ---------------------------------------------------------------------------
 // Beacon → Spot mapping
-// 将来12個に増やす場合は、このオブジェクトにエントリを追加するだけでよい。
-// 将来DB管理に移行する場合は、同じ構造のレコードをbeacon_configsテーブルに格納し
-// 起動時にロードする形に変更できる。
+// 12個に増やす場合はこのオブジェクトにエントリを追加するだけでよい。
 // ---------------------------------------------------------------------------
 const BEACON_STAMP_MAP: Record<string, {
   spotId: number;
@@ -26,7 +25,7 @@ const BEACON_STAMP_MAP: Record<string, {
     riddleMessage:
       "【お神輿なぞなぞ】担がれると進むのに、自分では歩かないものはなに？\n答えは…お神輿！",
   },
-  // 例: 2台目以降を追加する場合
+  // 2台目以降の追加例:
   // "00000531ef": {
   //   spotId: 2,
   //   beaconCode: "xxxx-xxxx-xxxx",
@@ -37,11 +36,10 @@ const BEACON_STAMP_MAP: Record<string, {
 };
 
 // ---------------------------------------------------------------------------
-// 連続発火対策: メモリMap（サーバー再起動でリセット、許容）
-// key: `${lineUserId}:${hwid}` / value: 最終処理時刻(ms)
+// 連続発火対策（メモリMap / サーバー再起動でリセット許容）
 // ---------------------------------------------------------------------------
 const throttleMap = new Map<string, number>();
-const THROTTLE_MS = 5 * 60 * 1000; // 5分
+const THROTTLE_MS = 5 * 60 * 1000;
 
 // ---------------------------------------------------------------------------
 // LINE署名検証
@@ -53,7 +51,7 @@ function verifyLineSignature(rawBody: Buffer, signature: string, channelSecret: 
 }
 
 // ---------------------------------------------------------------------------
-// LINE Push Message送信
+// LINE Push Message 送信
 // ---------------------------------------------------------------------------
 async function sendPushMessage(
   lineUserId: string,
@@ -117,12 +115,25 @@ async function processBeaconEvent(event: any): Promise<void> {
   throttleMap.set(throttleKey, now);
 
   // ユーザー検索
+  // LIFFログイン時に line_uid:${userId} 形式で保存される場合もあるため両方検索する
   const user = await db.query.usersTable.findFirst({
-    where: eq(usersTable.lineUserId, lineUserId),
+    where: or(
+      eq(usersTable.lineUserId, lineUserId),
+      eq(usersTable.lineUserId, `line_uid:${lineUserId}`),
+    ),
   });
 
+  logger.info(
+    {
+      lineUserId,
+      foundUserId: user?.userId ?? null,
+      foundLineUserId: user?.lineUserId ?? null,
+    },
+    "Beacon: ユーザー検索結果",
+  );
+
   if (!user) {
-    logger.info({ lineUserId }, "Beacon: 未登録ユーザー");
+    logger.warn({ lineUserId }, "Beacon: 未登録ユーザー（usersTableに一致なし）");
     await sendPushMessage(lineUserId, [
       {
         type: "text",
@@ -133,45 +144,45 @@ async function processBeaconEvent(event: any): Promise<void> {
     return;
   }
 
-  // 取得済みチェック
-  const existing = await db.query.stampsTable.findFirst({
-    where: and(
-      eq(stampsTable.userId, user.userId),
-      eq(stampsTable.spotId, beaconInfo.spotId),
-    ),
+  // スタンプ付与（共通関数）
+  const result = await applyStampBySpotId({
+    userId: user.userId,
+    spotId: beaconInfo.spotId,
+    triggerType: "BEACON",
   });
 
-  let alreadyStamped = !!existing;
+  // 必須ログ
+  logger.info(
+    {
+      lineUserId,
+      internalUserId: user.userId,
+      hwid,
+      spotId: beaconInfo.spotId,
+      resultStatus: result.status,
+      applied: result.applied,
+    },
+    "[Beacon stamp result]",
+  );
 
-  if (!alreadyStamped) {
-    try {
-      await db.insert(stampsTable).values({
-        userId: user.userId,
-        spotId: beaconInfo.spotId,
-        triggerType: "BEACON",
-      });
-      logger.info(
-        { lineUserId, userId: user.userId, spotId: beaconInfo.spotId, result: "新規付与" },
-        "Beacon: スタンプ付与",
-      );
-    } catch (err: any) {
-      if (err?.code === "23505") {
-        // ユニーク制約違反 = 競合で既に付与済み
-        alreadyStamped = true;
-        logger.info({ lineUserId, spotId: beaconInfo.spotId, result: "取得済み(競合)" }, "Beacon: スタンプ重複");
-      } else {
-        logger.error({ err: { message: err?.message, code: err?.code } }, "Beacon: DB挿入エラー");
-        return;
-      }
-    }
-  } else {
-    logger.info(
-      { lineUserId, userId: user.userId, spotId: beaconInfo.spotId, result: "取得済み" },
-      "Beacon: スタンプ取得済み",
-    );
+  // DB検証ログ
+  logger.info(
+    {
+      userId: user.userId,
+      spotId: beaconInfo.spotId,
+      stampExists: result.stamp !== null,
+      stampId: result.stamp?.id ?? null,
+      triggerType: result.stamp?.triggerType ?? null,
+    },
+    "[Beacon stamp verification]",
+  );
+
+  if (result.status === "spot_not_found") {
+    logger.error({ spotId: beaconInfo.spotId }, "Beacon: spotsTable に spotId が存在しません！シードを確認してください");
+    return;
   }
 
   // LINEメッセージ送信
+  const alreadyStamped = result.status === "already_stamped";
   const statusText = alreadyStamped
     ? `このお神輿のスタンプ（${beaconInfo.name}）は取得済みです。`
     : `✅ スタンプを獲得しました！\n${beaconInfo.name}をゲットしました！`;
@@ -196,7 +207,6 @@ router.post("/line/webhook", async (req, res) => {
     return;
   }
 
-  // 署名検証
   const signature = req.headers["x-line-signature"] as string | undefined;
   if (!signature) {
     logger.warn("x-line-signature ヘッダーが存在しません");
@@ -217,10 +227,9 @@ router.post("/line/webhook", async (req, res) => {
     return;
   }
 
-  // LINEは素早い200レスポンスを期待するため、先に返す
+  // LINEは素早い200レスポンスを要求するため先に返す
   res.status(200).json({ ok: true });
 
-  // 非同期でイベント処理
   const events: any[] = req.body?.events ?? [];
   for (const event of events) {
     if (event.type !== "beacon") continue;
