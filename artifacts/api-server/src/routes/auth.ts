@@ -15,6 +15,11 @@ function generateSessionToken(): string {
   return crypto.randomBytes(32).toString("hex");
 }
 
+// line_uid: プレフィックスを除去し、正規 LINE userId (Uxxxxxxxx) を返す
+function normalizeLineUserId(raw: string): string {
+  return raw.startsWith("line_uid:") ? raw.replace(/^line_uid:/, "") : raw;
+}
+
 // ---------------------------------------------------------------------------
 // line_uid: プレフィックス付き旧ユーザーのスタンプ・景品を正規ユーザーへ移行
 // 外部ブラウザで withLoginOnExternalBrowser なしでログインしていた場合に発生する。
@@ -113,11 +118,25 @@ router.post("/auth/line", async (req, res) => {
     lineUserId = idToken;
   }
 
-  logger.info({ lineUserId: lineUserId.startsWith("line_uid:") ? lineUserId : `${lineUserId.slice(0, 6)}***` }, "ログイン試行");
+  // line_uid: プレフィックスを除去して正規化する
+  const normalizedLineUserId = normalizeLineUserId(lineUserId);
 
+  logger.info({ lineUserId: `${normalizedLineUserId.slice(0, 6)}***` }, "ログイン試行");
+
+  // 正規形を優先して検索する。
+  // 正規形・旧形式の両レコードが同時に存在する場合に findFirst(or(...)) で
+  // 旧レコードが返ると、正規化更新が lineUserId の unique 制約に違反して
+  // ログインが失敗する。これを避けるため決定論的に2段階で検索する。
   let user = await db.query.usersTable.findFirst({
-    where: eq(usersTable.lineUserId, lineUserId),
+    where: eq(usersTable.lineUserId, normalizedLineUserId),
   });
+
+  // 正規ユーザーが存在しない場合のみ旧形式 (line_uid:) を探す
+  if (!user) {
+    user = await db.query.usersTable.findFirst({
+      where: eq(usersTable.lineUserId, `line_uid:${normalizedLineUserId}`),
+    });
+  }
 
   const sessionToken = generateSessionToken();
 
@@ -125,33 +144,32 @@ router.post("/auth/line", async (req, res) => {
     const userId = generateUserId();
     const [created] = await db.insert(usersTable).values({
       userId,
-      lineUserId,
+      lineUserId: normalizedLineUserId,
       displayName: displayName ?? "ゲスト",
       pictureUrl: pictureUrl ?? null,
       sessionToken,
     }).returning();
     user = created;
-    logger.info({ userId, lineUserId: lineUserId.slice(0, 6) + "***" }, "新規ユーザー作成");
+    logger.info({ userId, lineUserId: normalizedLineUserId.slice(0, 6) + "***" }, "新規ユーザー作成");
   } else {
     await db.update(usersTable)
       .set({
+        lineUserId: normalizedLineUserId,
         sessionToken,
         displayName: displayName ?? user.displayName,
         pictureUrl: pictureUrl ?? user.pictureUrl,
         updatedAt: new Date(),
       })
-      .where(eq(usersTable.lineUserId, lineUserId));
-    user = { ...user, sessionToken };
+      .where(eq(usersTable.userId, user.userId));
+    user = { ...user, lineUserId: normalizedLineUserId, sessionToken };
   }
 
-  // 正規LINEユーザー (Uxxxxxxxx) でログインした場合、
-  // 旧 line_uid: プレフィックス付きユーザーのデータを移行する
-  if (!lineUserId.startsWith("line_uid:")) {
-    try {
-      await migrateLegacyUser(user.userId, lineUserId);
-    } catch (err) {
-      logger.error({ err }, "レガシーユーザー移行中にエラー（ログインは継続）");
-    }
+  // 旧 line_uid: プレフィックス付きユーザーのスタンプ・景品を正規ユーザーへ移行する
+  // （重複する spotId はスキップ）
+  try {
+    await migrateLegacyUser(user.userId, normalizedLineUserId);
+  } catch (err) {
+    logger.error({ err }, "レガシーユーザー移行中にエラー（ログインは継続）");
   }
 
   res.cookie("session_token", sessionToken, {

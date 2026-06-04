@@ -1,0 +1,1 @@
+- [Git push constraint](git-push-constraint.md) — main agent can't commit/update refs; platform checkpoints at turn end; `git push github main` works (ignore the .lock error, trust "up-to-date").
