@@ -1,14 +1,36 @@
+import { useEffect, useRef } from "react";
 import { useGetStampCard, getGetStampCardQueryKey } from "@workspace/api-client-react";
+import { useQueryClient } from "@tanstack/react-query";
 import { BottomNav } from "@/components/BottomNav";
 import { StampGrid } from "@/components/StampGrid";
 import { Progress } from "@/components/ui/progress";
-import { Loader2, AlertCircle } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Loader2, AlertCircle, RefreshCw } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 
 export default function Home() {
-  const { data: stampCard, isLoading, error, refetch } = useGetStampCard(undefined, {
+  const queryClient = useQueryClient();
+  const { data: stampCard, isLoading, error, refetch, isFetching } = useGetStampCard(undefined, {
     query: { queryKey: getGetStampCardQueryKey() }
   });
+
+  // アプリ復帰時（タブ切り替え・LINEから戻る）にスタンプカードを再取得
+  // ビーコンでスタンプが付与された場合に画面に反映する
+  const lastVisibilityFetch = useRef(0);
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        const now = Date.now();
+        // 30秒以内の連続復帰は無視（過剰リクエスト防止）
+        if (now - lastVisibilityFetch.current > 30_000) {
+          lastVisibilityFetch.current = now;
+          queryClient.invalidateQueries({ queryKey: getGetStampCardQueryKey() });
+        }
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+  }, [queryClient]);
 
   if (isLoading) {
     return (
@@ -46,15 +68,27 @@ export default function Home() {
               <h1 className="text-2xl font-serif font-bold tracking-wider">飯能まつり</h1>
               <p className="text-primary-foreground/80 text-sm mt-1">デジタルスタンプラリー</p>
             </div>
-            {stampCard.pictureUrl && (
-              <img 
-                src={stampCard.pictureUrl} 
-                alt={stampCard.displayName} 
-                className="w-12 h-12 rounded-full border-2 border-primary-foreground shadow-sm"
-              />
-            )}
+            <div className="flex items-center gap-2">
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => refetch()}
+                disabled={isFetching}
+                className="text-primary-foreground hover:bg-primary-foreground/20 rounded-full w-10 h-10"
+                title="スタンプカードを更新"
+              >
+                <RefreshCw className={`w-5 h-5 ${isFetching ? "animate-spin" : ""}`} />
+              </Button>
+              {stampCard.pictureUrl && (
+                <img
+                  src={stampCard.pictureUrl}
+                  alt={stampCard.displayName}
+                  className="w-12 h-12 rounded-full border-2 border-primary-foreground shadow-sm"
+                />
+              )}
+            </div>
           </div>
-          
+
           <div className="bg-background/10 backdrop-blur-sm rounded-xl p-4 border border-primary-foreground/20">
             <div className="flex justify-between items-end mb-2">
               <span className="text-sm font-medium">現在のスタンプ</span>
@@ -70,6 +104,14 @@ export default function Home() {
 
       {/* Main Content */}
       <main className="max-w-md mx-auto p-4 mt-4 space-y-6">
+        {/* ビーコン更新ガイド */}
+        <section className="bg-blue-50 border border-blue-200 rounded-xl px-4 py-3 flex items-center gap-3">
+          <div className="text-blue-500 text-xl">📡</div>
+          <p className="text-sm text-blue-700 flex-1">
+            お神輿の近くでビーコンを受信した場合は、右上の <RefreshCw className="inline w-3.5 h-3.5" /> で更新するとスタンプが反映されます。
+          </p>
+        </section>
+
         <section>
           <div className="flex items-center justify-between mb-4 px-2">
             <h2 className="text-lg font-bold font-serif flex items-center">
@@ -77,7 +119,7 @@ export default function Home() {
               スタンプカード
             </h2>
           </div>
-          
+
           <StampGrid stamps={stampCard.stamps} />
         </section>
 

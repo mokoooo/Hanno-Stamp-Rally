@@ -4,6 +4,7 @@ import authRouter from "./auth";
 import stampsRouter from "./stamps";
 import prizesRouter from "./prizes";
 import adminRouter from "./admin";
+import lineRouter from "./line";
 
 const router: IRouter = Router();
 
@@ -12,5 +13,6 @@ router.use(authRouter);
 router.use(stampsRouter);
 router.use(prizesRouter);
 router.use(adminRouter);
+router.use(lineRouter);
 
 export default router;

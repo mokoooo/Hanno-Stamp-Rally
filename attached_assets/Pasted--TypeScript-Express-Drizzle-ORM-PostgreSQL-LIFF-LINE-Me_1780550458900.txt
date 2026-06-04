@@ -1,0 +1,248 @@
+あなたはTypeScript / Express / Drizzle ORM / PostgreSQL / LIFF / LINE Messaging APIに詳しいエンジニアです。
+既存の飯能まつりスタンプラリーアプリに、LINE Beacon連動のスタンプ付与機能を追加してください。
+
+# 現在の状況
+
+アプリURL:
+https://hanno-stamp-rally.replit.app
+
+既存機能:
+- LIFFログインは実装済み
+- QRコードスキャンによるスタンプ付与は実装済み
+- APIサーバーは Express + TypeScript
+- DBは Drizzle ORM + PostgreSQL
+- 既存のスタンプ付与APIは `POST /api/stamps/apply`
+- 既存のDBには以下のようなテーブルがある
+  - users
+  - spots
+  - stamps
+  - prize_redemptions
+- stampsには `triggerType` があり、現在はQRなどでスタンプ付与している
+- spotsには `id`, `name`, `description`, `location`, `order`, `token` がある
+- stampsには `(userId, spotId)` のユニーク制約があるため、同一ユーザーの同一スポット重複付与はできない
+
+# 今回追加したい機能
+
+現在はQRコードでスタンプラリーを進めているが、今後はLINE Beaconを使う。
+
+ユーザーがLINEアプリ上でLIFFアプリを開いている、またはLINE公式アカウントと連携している状態で、LINE Beaconの近くに行ったときに以下を行う。
+
+1. LINE BeaconのWebhookイベントを受信する
+2. 受信したBeaconのHWIDから、対応するスタンプスポットを特定する
+3. 対応するスタンプをユーザーに付与する
+4. 既に同じスタンプを取得済みなら重複付与しない
+5. スタンプ付与後、LINE Messaging APIでユーザーにメッセージを送る
+6. フロント側のスタンプカードを再読み込みしたときに、ビーコンで押されたスタンプが反映されるようにする
+
+# 今回登録するビーコン
+
+以下のLINE Beaconが発火した場合、スタンプラリー左上のスタンプ、つまり `スタンプID: 1` を押すものとする。
+
+Beacon Code:
+2e78-7b58-5e1f
+
+HWID:
+00000531ee
+
+型式:
+Beacon-03V2
+
+Model:
+WDA-024
+
+このビーコンは飯能まつりのお神輿に設置される。
+最終的にはお神輿11個、受付1個、合計12個のLINE Beaconを使う。
+今回はまず1個目のビーコンのみ実装し、12個へ拡張しやすい設計にする。
+
+# 実装方針
+
+LINE BeaconはLIFFフロントエンドで直接検知するのではなく、LINE Messaging APIのWebhookイベントとしてサーバー側で受信する構成にしてください。
+
+新しく以下を追加してください。
+
+## 1. LINE Webhook受信ルート
+
+`artifacts/api-server/src/routes/line.ts` などを新規作成し、以下のエンドポイントを追加してください。
+
+POST `/api/line/webhook`
+
+このWebhookでは、LINE Platformから送られるイベント配列を処理する。
+
+処理対象:
+- `event.type === "beacon"`
+- `event.beacon.hwid === "00000531ee"`
+
+この条件に一致した場合、spotId = 1 のスタンプを付与する。
+
+## 2. 署名検証
+
+セキュリティのため、LINEの署名検証を実装してください。
+
+環境変数:
+- `LINE_CHANNEL_SECRET`
+- `LINE_CHANNEL_ACCESS_TOKEN`
+
+`x-line-signature` ヘッダーを検証し、不正な署名の場合は 401 を返す。
+
+実装では `crypto.createHmac("SHA256", LINE_CHANNEL_SECRET)` を使用し、raw bodyから署名を検証する。
+Expressの `express.json()` でbodyをパースする前にraw bodyを保持できるように対応してください。
+
+注意:
+既存のAPIに影響しないように、LINE Webhookだけraw bodyを扱える構成にしてください。
+難しければ、`express.json({ verify: ... })` で `req.rawBody` を保存する実装でも構いません。
+
+## 3. ビーコンとスタンプの対応表
+
+まずはコード内の定数でよいので、以下のマッピングを作成してください。
+
+```ts
+const BEACON_STAMP_MAP = {
+  "00000531ee": {
+    spotId: 1,
+    beaconCode: "2e78-7b58-5e1f",
+    name: "お神輿スタンプ 1",
+    episodeMessage: "【お神輿エピソード】このお神輿は飯能まつりの巡行を彩る大切な存在です。地域の人々が受け継いできた伝統を、ぜひ近くで感じてください。",
+    riddleMessage: "【お神輿なぞなぞ】担がれると進むのに、自分では歩かないものはなに？\n答えは…お神輿！"
+  }
+}
+
+将来12個へ増やしやすいように、配列またはオブジェクトで管理してください。
+可能であれば、将来的にDB管理へ移行しやすい形にしてください。
+
+4. スタンプ付与処理
+
+Webhookイベントから event.source.userId を取得する。
+この lineUserId を usersTable.lineUserId に照合して、既存ユーザーを取得する。
+
+ユーザーが存在しない場合:
+
+スタンプ付与はしない
+LINEに「スタンプラリーの初回登録が必要です。まずアプリを開いてログインしてください。」というメッセージを送る
+200を返す
+
+ユーザーが存在する場合:
+
+stampsTable に userId, spotId, triggerType: "BEACON" でinsertする
+既に同じ userId + spotId が存在する場合は重複エラーにせず、取得済みとして扱う
+DBのユニーク制約に衝突した場合も500にしない
+5. LINEメッセージ送信
+
+ビーコン検知時、ユーザーにLINEメッセージを送信する。
+
+送信するメッセージは2つ。
+
+1つ目:
+このお神輿にまつわるエピソード
+
+2つ目:
+このお神輿にまつわるなぞなぞ
+
+さらに、スタンプ付与状況に応じてメッセージを少し変える。
+
+初回取得時:
+
+「スタンプを獲得しました」
+エピソード
+なぞなぞ
+
+既に取得済みの場合:
+
+「このお神輿のスタンプは取得済みです」
+エピソード
+なぞなぞ
+
+LINE送信には POST https://api.line.me/v2/bot/message/push を使用してください。
+Authorization: Bearer ${LINE_CHANNEL_ACCESS_TOKEN} を付けること。
+
+送信先:
+event.source.userId
+
+messages:
+Text messageを3件以内で送る。
+LINEの仕様上、1回のpushで送れるmessages配列にまとめる。
+
+6. 連続発火対策
+
+お神輿の近くにいる間、同じビーコンイベントが短時間に複数回届く可能性がある。
+ユーザー体験とLINE送信数削減のため、同一ユーザー・同一ビーコンに対して短時間の再送を抑制してください。
+
+最低限の実装:
+
+メモリ上のMapで lineUserId + hwid ごとの最終処理時刻を持つ
+5分以内の再発火はメッセージ送信しない
+スタンプ付与も再処理しない
+ただしサーバー再起動でMapが消えるのは許容
+
+可能であればDBテーブルで beacon_events を作る。
+ただし今回は実装速度を優先し、まずはメモリMapでも可。
+
+7. 管理・確認用ログ
+
+Webhook受信時に以下をログ出力してください。
+
+event.type
+hwid
+beacon.type
+lineUserId
+対応spotId
+初回付与か、取得済みか、未登録ユーザーか
+
+ただし、Channel SecretやAccess Tokenは絶対にログに出さないでください。
+
+8. 既存のスタンプカードとの整合性
+
+既存の GET /api/stamps/card は、stampsTableを見てスタンプ取得状況を返しているはずなので、ビーコンで追加されたスタンプも既存画面に反映されるようにしてください。
+
+必要であればフロント側に以下の対応を追加してください。
+
+画面表示時に /api/stamps/card を再取得
+アプリ復帰時、または一定間隔で再取得
+「ビーコンでスタンプが押された可能性があります。更新してください」のような更新ボタンを設置
+
+ただし、今回の主実装はWebhookによるサーバー側スタンプ付与です。
+
+9. ルーティング追加
+
+既存の artifacts/api-server/src/routes/index.ts に line route を追加してください。
+
+例:
+
+import lineRouter from "./line";
+router.use("/line", lineRouter);
+
+最終的なWebhook URLは以下になる想定です。
+
+https://hanno-stamp-rally.replit.app/api/line/webhook
+
+このURLをLINE Developers ConsoleのMessaging API設定に登録できる状態にしてください。
+
+10. 型・ビルド確認
+
+以下を必ず確認してください。
+
+pnpm run typecheck
+pnpm -r --filter "./artifacts/api-server" run build
+
+エラーが出る場合は修正してください。
+
+11. 実装後に出力してほしい内容
+
+実装後、以下を報告してください。
+
+変更したファイル一覧
+追加した環境変数
+LINE Developers Consoleで設定すべきWebhook URL
+ビーコンHWID 00000531ee が発火したときの処理フロー
+重複発火対策の内容
+本番テスト手順
+12個のビーコンへ拡張する場合の追加方法
+重要な制約
+既存のQRスタンプ機能を壊さないこと
+既存DB構造を大きく壊さないこと
+まずはHWID 00000531ee → spotId 1 のみ実装すること
+既存ユーザーとLINE userIdの紐付けは usersTable.lineUserId を使うこと
+未登録ユーザーにはスタンプを付与せず、LIFFアプリへのログインを促すこと
+LINEの秘密情報をフロントエンドに出さないこと
+LINE_CHANNEL_ACCESS_TOKEN と LINE_CHANNEL_SECRET はサーバー側環境変数だけで扱うこと
+
+補足として、現状のアプリ構成を見る限り、既存の `POST /api/stamps/apply` を無理に流用するより、Webhook専用のスタンプ付与関数をサーバー

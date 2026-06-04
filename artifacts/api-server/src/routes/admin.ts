@@ -127,7 +127,7 @@ router.get("/admin/users", requireAuth, async (req, res) => {
 });
 
 router.get("/admin/users/:userId", requireAuth, async (req, res) => {
-  const { userId } = req.params;
+  const userId = req.params.userId as string;
 
   const user = await db.query.usersTable.findFirst({
     where: eq(usersTable.userId, userId),
