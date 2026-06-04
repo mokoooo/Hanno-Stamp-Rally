@@ -1,0 +1,8 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "cqK7v-GEFSEfqxe_xahZt"
+uri = "file://hanno-matsuri.tar.gz"
+type = "unspecified"
+title = "飯能まつり スタンプラリー — ソースコード一式"
