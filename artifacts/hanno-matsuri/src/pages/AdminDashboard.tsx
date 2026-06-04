@@ -13,9 +13,9 @@ export default function AdminDashboard() {
   const [page, setPage] = useState(1);
   const { toast } = useToast();
   
-  const { data: stats, isLoading: statsLoading } = useGetStats(undefined, { query: { queryKey: getGetStatsQueryKey() } });
+  const { data: stats, isLoading: statsLoading } = useGetStats({ query: { queryKey: getGetStatsQueryKey() } });
   const { data: usersData, isLoading: usersLoading } = useListUsers({ page, limit: 20 }, { query: { queryKey: getListUsersQueryKey({ page, limit: 20 }) } });
-  const { data: spotsData, isLoading: spotsLoading } = useListSpots(undefined, { query: { queryKey: getListSpotsQueryKey() } });
+  const { data: spotsData, isLoading: spotsLoading } = useListSpots({ query: { queryKey: getListSpotsQueryKey() } });
   
   const exportCsv = useExportCsv();
   const rotateToken = useRotateSpotToken();

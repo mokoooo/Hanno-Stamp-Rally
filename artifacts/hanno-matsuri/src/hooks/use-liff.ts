@@ -52,7 +52,9 @@ export function useLiff() {
 
     const initializeLiff = async (liffObj: any) => {
       try {
-        await liffObj.init({ liffId });
+        // withLoginOnExternalBrowser: true により、外部ブラウザでも LINE 認証が走り
+        // LINE app と同じ userId (Uxxxxxxxx) が取得できる。
+        await liffObj.init({ liffId, withLoginOnExternalBrowser: true });
         setLiff(liffObj);
         setIsInitialized(true);
       } catch (err) {

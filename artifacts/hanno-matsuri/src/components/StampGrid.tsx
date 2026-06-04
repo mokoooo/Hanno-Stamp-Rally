@@ -1,4 +1,4 @@
-import { StampSpot } from "@workspace/api-client-react/src/generated/api.schemas";
+import { StampSpot } from "@workspace/api-client-react";
 import { Check, MapPin } from "lucide-react";
 import { format } from "date-fns";
 

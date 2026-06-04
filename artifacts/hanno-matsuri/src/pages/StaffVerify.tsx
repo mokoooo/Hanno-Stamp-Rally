@@ -5,7 +5,7 @@ import { Loader2, ShieldCheck, Gift, CheckCircle2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
-import { PrizeTierTier, RedeemPrizeBodyTier } from "@workspace/api-client-react/src/generated/api.schemas";
+import { PrizeTierTier, RedeemPrizeBodyTier } from "@workspace/api-client-react";
 
 export default function StaffVerify() {
   const [match, params] = useRoute("/staff/verify/:userId");

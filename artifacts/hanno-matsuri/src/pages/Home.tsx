@@ -10,7 +10,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 
 export default function Home() {
   const queryClient = useQueryClient();
-  const { data: stampCard, isLoading, error, refetch, isFetching } = useGetStampCard(undefined, {
+  const { data: stampCard, isLoading, error, refetch, isFetching } = useGetStampCard({
     query: {
       queryKey: getGetStampCardQueryKey(),
       // ビーコンはサーバー側で処理されるため、10秒ごとに自動再取得
@@ -109,7 +109,7 @@ export default function Home() {
                 <span className="text-sm ml-1 opacity-80">/{stampCard.totalSpots}</span>
               </div>
             </div>
-            <Progress value={progressPercentage} className="h-2 bg-primary-foreground/20" indicatorClassName="bg-secondary" />
+            <Progress value={progressPercentage} className="h-2 bg-primary-foreground/20 [&>div]:bg-secondary" />
           </div>
         </div>
       </header>

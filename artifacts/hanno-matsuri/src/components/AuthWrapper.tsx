@@ -14,7 +14,7 @@ const SESSION_KEY = "stamp_session_token";
 export function AuthWrapper({ children }: AuthWrapperProps) {
   const storedToken = typeof window !== "undefined" ? localStorage.getItem(SESSION_KEY) : null;
 
-  const { data: user, isLoading: userLoading } = useGetMe(undefined, {
+  const { data: user, isLoading: userLoading } = useGetMe({
     query: {
       retry: false,
       queryKey: getGetMeQueryKey(),
@@ -48,11 +48,19 @@ export function AuthWrapper({ children }: AuthWrapperProps) {
     }
   }, [loginMutation, queryClient]);
 
-  // Auto-login via LIFF when ready
+  // LIFF初期化後に自動ログイン
+  // withLoginOnExternalBrowser: true により、外部ブラウザでもLINE認証済みの状態で
+  // init() が完了するため、isLoggedIn() === true になるはずだが、
+  // 未ログインのままの場合は liff.login() を呼び出してリダイレクト。
   useEffect(() => {
     const processLiffLogin = async () => {
       if (!liffInitialized || !liff || user || isProcessingLogin || userLoading) return;
-      if (!liff.isLoggedIn()) return;
+
+      // 未ログインなら LINE ログインへリダイレクト（外部ブラウザも含む）
+      if (!liff.isLoggedIn()) {
+        liff.login();
+        return;
+      }
 
       try {
         setIsProcessingLogin(true);
@@ -60,11 +68,11 @@ export function AuthWrapper({ children }: AuthWrapperProps) {
         const profile = await liff.getProfile();
 
         if (rawToken) {
+          // IDトークン(JWT)がある場合 → sub が LINE userId ("Uxxxxxxxx")
           await performLogin(rawToken, profile.displayName, profile.pictureUrl);
         } else {
-          // openid スコープが無い場合: LINE User IDを使う
-          const userId = profile.userId;
-          await performLogin(`line_uid:${userId}`, profile.displayName, profile.pictureUrl);
+          // openidスコープなし（通常は発生しない）→ フォールバック
+          await performLogin(`line_uid:${profile.userId}`, profile.displayName, profile.pictureUrl);
         }
       } catch (err) {
         console.error("LIFF auto-login failed:", err);
@@ -76,7 +84,7 @@ export function AuthWrapper({ children }: AuthWrapperProps) {
     processLiffLogin();
   }, [liffInitialized, liff, user, userLoading, performLogin, isProcessingLogin]);
 
-  // Show loading while session is being checked (only if we might have a valid session)
+  // セッション確認中 or ログイン処理中
   if ((userLoading && storedToken) || isProcessingLogin) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-background">
@@ -88,15 +96,15 @@ export function AuthWrapper({ children }: AuthWrapperProps) {
     );
   }
 
-  // Logged in — show app
+  // ログイン済み
   if (user) {
     return <>{children}</>;
   }
 
+  // LIFFなし（開発環境）またはLIFF初期化失敗時のフォールバック画面
   const handleLogin = async () => {
     setLoginError(null);
 
-    // In LIFF context (LINE app)
     if (liff) {
       if (!liff.isLoggedIn()) {
         liff.login();
@@ -119,7 +127,7 @@ export function AuthWrapper({ children }: AuthWrapperProps) {
       return;
     }
 
-    // Non-LIFF fallback (development)
+    // 開発環境フォールバック
     await performLogin("mock-id-token", "テストユーザー", "https://api.dicebear.com/7.x/avataaars/svg?seed=test");
   };
 
@@ -154,7 +162,6 @@ export function AuthWrapper({ children }: AuthWrapperProps) {
             )}
           </Button>
 
-          {/* Error display */}
           {(loginError || liffError) && (
             <div
               className="flex items-start gap-2 p-3 rounded-lg bg-destructive/10 text-destructive text-sm text-left"

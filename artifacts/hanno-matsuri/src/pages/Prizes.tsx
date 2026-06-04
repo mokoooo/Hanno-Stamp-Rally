@@ -5,11 +5,11 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Progress } from "@/components/ui/progress";
 
 export default function Prizes() {
-  const { data: prizeStatus, isLoading: prizeLoading } = useGetPrizeStatus(undefined, {
+  const { data: prizeStatus, isLoading: prizeLoading } = useGetPrizeStatus({
     query: { queryKey: getGetPrizeStatusQueryKey() }
   });
   
-  const { data: stampCard, isLoading: cardLoading } = useGetStampCard(undefined, {
+  const { data: stampCard, isLoading: cardLoading } = useGetStampCard({
     query: { queryKey: getGetStampCardQueryKey() }
   });
 
