@@ -71,8 +71,8 @@ export function AuthWrapper({ children }: AuthWrapperProps) {
           // IDトークン(JWT)がある場合 → sub が LINE userId ("Uxxxxxxxx")
           await performLogin(rawToken, profile.displayName, profile.pictureUrl);
         } else {
-          // openidスコープなし（通常は発生しない）→ フォールバック
-          await performLogin(`line_uid:${profile.userId}`, profile.displayName, profile.pictureUrl);
+          // openidスコープなし（通常は発生しない）→ profile.userId をそのまま使う
+          await performLogin(profile.userId, profile.displayName, profile.pictureUrl);
         }
       } catch (err) {
         console.error("LIFF auto-login failed:", err);
@@ -117,7 +117,7 @@ export function AuthWrapper({ children }: AuthWrapperProps) {
         if (rawToken) {
           await performLogin(rawToken, profile.displayName, profile.pictureUrl);
         } else {
-          await performLogin(`line_uid:${profile.userId}`, profile.displayName, profile.pictureUrl);
+          await performLogin(profile.userId, profile.displayName, profile.pictureUrl);
         }
       } catch (err: any) {
         console.error("Manual LIFF login failed:", err);
