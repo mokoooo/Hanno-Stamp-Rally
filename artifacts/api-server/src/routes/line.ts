@@ -181,14 +181,15 @@ async function processBeaconEvent(event: any): Promise<void> {
     return;
   }
 
-  // LINEメッセージ送信
-  const alreadyStamped = result.status === "already_stamped";
-  const statusText = alreadyStamped
-    ? `このお神輿のスタンプ（${beaconInfo.name}）は取得済みです。`
-    : `✅ スタンプを獲得しました！\n${beaconInfo.name}をゲットしました！`;
+  // 取得済みの場合はLINEメッセージを送らずに終了
+  if (result.status === "already_stamped") {
+    logger.info({ lineUserId, spotId: beaconInfo.spotId }, "Beacon: スタンプ取得済みのためメッセージ送信をスキップ");
+    return;
+  }
 
+  // 新規取得時のみLINEメッセージ送信
   await sendPushMessage(lineUserId, [
-    { type: "text", text: statusText },
+    { type: "text", text: `✅ スタンプを獲得しました！\n${beaconInfo.name}をゲットしました！` },
     { type: "text", text: beaconInfo.episodeMessage },
     { type: "text", text: beaconInfo.riddleMessage },
   ]);
