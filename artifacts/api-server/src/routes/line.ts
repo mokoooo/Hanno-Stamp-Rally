@@ -36,10 +36,34 @@ const BEACON_STAMP_MAP: Record<string, {
 };
 
 // ---------------------------------------------------------------------------
-// 連続発火対策（メモリMap / サーバー再起動でリセット許容）
+// スタンプ付与用スロットリング（登録済みユーザーのみ）
+// スタンプ付与成功 or 取得済み確認後にのみセットする。
+// 未登録ユーザーには絶対にセットしない。
 // ---------------------------------------------------------------------------
 const throttleMap = new Map<string, number>();
 const THROTTLE_MS = 5 * 60 * 1000;
+
+// ---------------------------------------------------------------------------
+// 登録案内の連打防止（スタンプ用 throttle とは完全に分離）
+// 未登録ユーザーへの「アプリを開いてください」メッセージを5分に1回に制限する。
+// ---------------------------------------------------------------------------
+const registerPromptThrottleMap = new Map<string, number>();
+const REGISTER_PROMPT_THROTTLE_MS = 5 * 60 * 1000;
+
+// ---------------------------------------------------------------------------
+// 未登録ユーザーへの Beacon pending（Android対策）
+// ビーコン検知時にユーザーがまだ未登録の場合、ここに記録しておき、
+// ログイン完了後（consumePendingBeacon）にスタンプを付与する。
+// 10分以上経過した pending は破棄する。
+// ---------------------------------------------------------------------------
+interface PendingBeacon {
+  hwid: string;
+  spotId: number;
+  beaconInfo: (typeof BEACON_STAMP_MAP)[string];
+  ts: number;
+}
+const pendingBeaconMap = new Map<string, PendingBeacon>();
+const PENDING_BEACON_EXPIRE_MS = 10 * 60 * 1000;
 
 // ---------------------------------------------------------------------------
 // LINE署名検証
@@ -81,6 +105,44 @@ async function sendPushMessage(
 }
 
 // ---------------------------------------------------------------------------
+// ログイン完了後に呼び出す：pending Beacon があればスタンプ付与 + LINE通知
+// auth.ts の POST /auth/line からログイン完了後に呼ばれる（Android対策）。
+// ---------------------------------------------------------------------------
+export async function consumePendingBeacon(lineUserId: string, userId: string): Promise<void> {
+  const pending = pendingBeaconMap.get(lineUserId);
+  if (!pending) return;
+
+  pendingBeaconMap.delete(lineUserId);
+
+  if (Date.now() - pending.ts > PENDING_BEACON_EXPIRE_MS) {
+    logger.info({ lineUserId, userId }, "[Pending Beacon] 期限切れのため破棄（10分超過）");
+    return;
+  }
+
+  const result = await applyStampBySpotId({
+    userId,
+    spotId: pending.spotId,
+    triggerType: "BEACON",
+  });
+
+  logger.info(
+    { lineUserId, userId, hwid: pending.hwid, spotId: pending.spotId, resultStatus: result.status },
+    "[Pending Beacon] ログイン後スタンプ付与試行",
+  );
+
+  if (result.status !== "applied") return;
+
+  const throttleKey = `${lineUserId}:${pending.hwid}`;
+  throttleMap.set(throttleKey, Date.now());
+
+  await sendPushMessage(lineUserId, [
+    { type: "text", text: `✅ スタンプを獲得しました！\n${pending.beaconInfo.name}をゲットしました！` },
+    { type: "text", text: pending.beaconInfo.episodeMessage },
+    { type: "text", text: pending.beaconInfo.riddleMessage },
+  ]);
+}
+
+// ---------------------------------------------------------------------------
 // Beaconイベント処理（1件）
 // ---------------------------------------------------------------------------
 async function processBeaconEvent(event: any): Promise<void> {
@@ -103,19 +165,8 @@ async function processBeaconEvent(event: any): Promise<void> {
     return;
   }
 
-  // 連続発火チェック
-  const throttleKey = `${lineUserId}:${hwid}`;
-  const lastProcessed = throttleMap.get(throttleKey);
-  const now = Date.now();
-  if (lastProcessed !== undefined && now - lastProcessed < THROTTLE_MS) {
-    const remainingSec = Math.ceil((THROTTLE_MS - (now - lastProcessed)) / 1000);
-    logger.info({ lineUserId, hwid, remainingSec }, "Beacon throttled (5分以内の再発火)");
-    return;
-  }
-  throttleMap.set(throttleKey, now);
-
-  // ユーザー検索
-  // LIFFログイン時に line_uid:${userId} 形式で保存される場合もあるため両方検索する
+  // ユーザー検索を throttle チェックより先に行う。
+  // 未登録ユーザーにはスタンプ用 throttleMap をセットしてはならない。
   const user = await db.query.usersTable.findFirst({
     where: or(
       eq(usersTable.lineUserId, lineUserId),
@@ -133,6 +184,22 @@ async function processBeaconEvent(event: any): Promise<void> {
   );
 
   if (!user) {
+    // 未登録ユーザー: スタンプ用 throttleMap には触れない。
+    // 登録案内の連打防止のみ registerPromptThrottleMap で管理する。
+    const promptKey = `prompt:${lineUserId}`;
+    const now = Date.now();
+    const lastPrompt = registerPromptThrottleMap.get(promptKey);
+    if (lastPrompt !== undefined && now - lastPrompt < REGISTER_PROMPT_THROTTLE_MS) {
+      // pending は更新して新しい hwid を保持（ビーコンが変わった場合に対応）
+      pendingBeaconMap.set(lineUserId, { hwid, spotId: beaconInfo.spotId, beaconInfo, ts: now });
+      logger.info({ lineUserId }, "Beacon: 登録案内throttle中（メッセージ送信スキップ）");
+      return;
+    }
+    registerPromptThrottleMap.set(promptKey, now);
+
+    // ログイン後消化用に pending を記録
+    pendingBeaconMap.set(lineUserId, { hwid, spotId: beaconInfo.spotId, beaconInfo, ts: now });
+
     logger.warn({ lineUserId }, "Beacon: 未登録ユーザー（usersTableに一致なし）");
     await sendPushMessage(lineUserId, [
       {
@@ -141,6 +208,16 @@ async function processBeaconEvent(event: any): Promise<void> {
           "スタンプラリーへの参加には初回登録が必要です。\nまずアプリを開いてLINEログインを完了してください。\nhttps://hanno-stamp-rally.replit.app/",
       },
     ]);
+    return;
+  }
+
+  // 登録済みユーザー: ここでスタンプ用 throttle をチェックする
+  const throttleKey = `${lineUserId}:${hwid}`;
+  const lastProcessed = throttleMap.get(throttleKey);
+  const now = Date.now();
+  if (lastProcessed !== undefined && now - lastProcessed < THROTTLE_MS) {
+    const remainingSec = Math.ceil((THROTTLE_MS - (now - lastProcessed)) / 1000);
+    logger.info({ lineUserId, hwid, remainingSec }, "Beacon throttled (5分以内の再発火)");
     return;
   }
 
@@ -181,13 +258,15 @@ async function processBeaconEvent(event: any): Promise<void> {
     return;
   }
 
-  // 取得済みの場合はLINEメッセージを送らずに終了
   if (result.status === "already_stamped") {
+    // 取得済みの場合もthrottleをセットして連続発火を抑制する
+    throttleMap.set(throttleKey, now);
     logger.info({ lineUserId, spotId: beaconInfo.spotId }, "Beacon: スタンプ取得済みのためメッセージ送信をスキップ");
     return;
   }
 
-  // 新規取得時のみLINEメッセージ送信
+  // 新規取得成功時のみ throttle をセット + LINEメッセージ送信
+  throttleMap.set(throttleKey, now);
   await sendPushMessage(lineUserId, [
     { type: "text", text: `✅ スタンプを獲得しました！\n${beaconInfo.name}をゲットしました！` },
     { type: "text", text: beaconInfo.episodeMessage },

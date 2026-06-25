@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 import crypto from "crypto";
 import { LineLoginBody } from "@workspace/api-zod";
 import { logger } from "../lib/logger";
+import { consumePendingBeacon } from "./line";
 
 const router = Router();
 
@@ -170,6 +171,13 @@ router.post("/auth/line", async (req, res) => {
     await migrateLegacyUser(user.userId, normalizedLineUserId);
   } catch (err) {
     logger.error({ err }, "レガシーユーザー移行中にエラー（ログインは継続）");
+  }
+
+  // ログイン前にビーコン圏内にいた場合の pending Beacon を消化する（Android対策）
+  try {
+    await consumePendingBeacon(normalizedLineUserId, user.userId);
+  } catch (err) {
+    logger.error({ err }, "Pending Beacon 消化中にエラー（ログインは継続）");
   }
 
   res.cookie("session_token", sessionToken, {
