@@ -42,3 +42,12 @@ channel = "stable-25_05"
 
 [userenv.shared]
 VITE_LIFF_ID = "2009938765-g4IKmQ9b"
+APP_BASE_URL = "https://hanno-stamp-rally.replit.app"
+PUBLIC_APP_URL = "https://hanno-stamp-rally.replit.app"
+LIFF_ID = "2009938765-g4IKmQ9b"
+LIFF_URL = "https://liff.line.me/2009938765-g4IKmQ9b"
+LIFF_ENDPOINT_URL = "https://hanno-stamp-rally.replit.app"
+LINE_LOGIN_CHANNEL_ID = "2009938765"
+LINE_LOGIN_CALLBACK_URL = "https://liff.line.me/2009938765-g4IKmQ9b"
+LINE_BOT_BASIC_ID = "@951wtjoh"
+REGISTER_PROMPT_LIFF_URL = "https://liff.line.me/2009938765-g4IKmQ9b"
