@@ -205,7 +205,7 @@ async function processBeaconEvent(event: any): Promise<void> {
       {
         type: "text",
         text:
-          "スタンプラリーへの参加には初回登録が必要です。\nまずアプリを開いてLINEログインを完了してください。\nhttps://hanno-stamp-rally.replit.app/",
+          "スタンプラリーへの参加には初回登録が必要です。\nまずアプリを開いてLINEログインを完了してください。\nhttps://liff.line.me/2009938765-g4IKmQ9b",
       },
     ]);
     return;
