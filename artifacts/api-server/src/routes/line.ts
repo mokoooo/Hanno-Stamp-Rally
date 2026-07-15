@@ -16,7 +16,7 @@ const BEACON_STAMP_MAP: Record<string, {
   episodeMessage: string;
   riddleMessage: string;
 }> = {
-  "00000531ee": {
+  "00000acd5f": {
     spotId: 1,
     beaconCode: "2e78-7b58-5e1f",
     name: "お神輿スタンプ 1",
